@@ -2,16 +2,14 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import yahooFinance from "yahoo-finance2";
 import { STOCKS, INDICES } from "./symbols.js";
 
 const __dir = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 3000;
-const QUOTE_TTL = 20_000;        // ms: how long quotes are reused (protects the upstream from heavy traffic)
+const QUOTE_TTL = 60_000;
 const CHART_TTL = 10 * 60_000;
-try { yahooFinance.suppressNotices(["yahooSurvey"]); } catch {}
 
-const cache = new Map();         // key -> { at, data }
+const cache = new Map();
 async function cached(key, ttl, load) {
   const hit = cache.get(key);
   if (hit && Date.now() - hit.at < ttl) return hit.data;
@@ -20,41 +18,72 @@ async function cached(key, ttl, load) {
     cache.set(key, { at: Date.now(), data });
     return data;
   } catch (err) {
-    if (hit) return { ...hit.data, stale: true };   // serve last good data if upstream fails
+    if (hit) return { ...hit.data, stale: true };
     throw err;
   }
 }
 
 const num = v => (typeof v === "number" && isFinite(v) ? v : null);
 
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+async function yget(sym, query) {
+  let lastErr;
+  for (const host of ["query1", "query2"]) {
+    try {
+      const r = await fetch(`https://${host}.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?${query}`, { headers: { "User-Agent": UA, Accept: "application/json" } });
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const j = await r.json();
+      const res = j && j.chart && j.chart.result && j.chart.result[0];
+      if (!res) throw new Error("no data");
+      return res;
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr;
+}
+
+async function pool(items, size, fn) {
+  const out = new Array(items.length); let i = 0;
+  await Promise.all(Array.from({ length: size }, async () => {
+    while (i < items.length) { const k = i++; out[k] = await fn(items[k]).catch(() => null); }
+  }));
+  return out;
+}
+
+const lastGood = new Map();
+
+function toQuote(id, res) {
+  const m = res.meta || {};
+  const price = num(m.regularMarketPrice), prev = num(m.chartPreviousClose);
+  return {
+    price, prevClose: prev,
+    change: price !== null && prev ? +(price - prev).toFixed(2) : null,
+    d1: price !== null && prev ? +(((price - prev) / prev) * 100).toFixed(2) : null,
+    volume: num(m.regularMarketVolume), dayHigh: num(m.regularMarketDayHigh), dayLow: num(m.regularMarketDayLow),
+    high52: num(m.fiftyTwoWeekHigh), low52: num(m.fiftyTwoWeekLow),
+    time: m.regularMarketTime ? new Date(m.regularMarketTime * 1000).toISOString() : null
+  };
+}
+
 async function loadQuotes() {
-  const syms = [...STOCKS.map(s => s.yahoo), ...INDICES.map(i => i.id)];
-  const res = await yahooFinance.quote(syms, {}, { validateResult: false });
-  const by = Object.fromEntries(res.map(r => [r.symbol, r]));
-  const stocks = STOCKS.map((s, i) => {
-    const q = by[s.yahoo] || {};
-    return {
-      rank: i + 1, sym: s.sym, name: s.name, sector: s.sector,
-      price: num(q.regularMarketPrice), change: num(q.regularMarketChange), d1: num(q.regularMarketChangePercent),
-      prevClose: num(q.regularMarketPreviousClose), volume: num(q.regularMarketVolume),
-      cap: num(q.marketCap), high52: num(q.fiftyTwoWeekHigh), low52: num(q.fiftyTwoWeekLow),
-      dayHigh: num(q.regularMarketDayHigh), dayLow: num(q.regularMarketDayLow),
-      time: q.regularMarketTime ? new Date(q.regularMarketTime).toISOString() : null
-    };
+  const ids = [...STOCKS.map(s => s.yahoo), ...INDICES.map(i => i.id)];
+  const got = await pool(ids, 6, async id => {
+    const q = toQuote(id, await yget(id, "range=1d&interval=1d"));
+    lastGood.set(id, q);
+    return q;
   });
-  const indices = INDICES.map(i => {
-    const q = by[i.id] || {};
-    return { name: i.name, price: num(q.regularMarketPrice), d1: num(q.regularMarketChangePercent) };
-  });
-  return { fetchedAt: new Date().toISOString(), marketState: (res[0] && res[0].marketState) || null, stocks, indices };
+  const by = {}; ids.forEach((id, k) => { by[id] = got[k] || lastGood.get(id) || {}; });
+  if (!got.some(Boolean) && !ids.some(id => lastGood.has(id))) throw new Error("Yahoo blocked or unreachable");
+  const stocks = STOCKS.map((s, i) => ({ rank: i + 1, sym: s.sym, name: s.name, sector: s.sector, cap: null, ...by[s.yahoo] }));
+  const indices = INDICES.map(i => ({ name: i.name, price: by[i.id].price ?? null, d1: by[i.id].d1 ?? null }));
+  return { fetchedAt: new Date().toISOString(), marketState: null, stocks, indices };
 }
 
 async function loadChart(sym) {
   const s = STOCKS.find(x => x.sym === sym);
   if (!s) throw new Error("unknown symbol");
-  const period1 = new Date(Date.now() - 400 * 864e5);
-  const r = await yahooFinance.chart(s.yahoo, { period1, interval: "1d" }, { validateResult: false });
-  const points = (r.quotes || []).filter(q => num(q.close) !== null).map(q => [new Date(q.date).toISOString().slice(0, 10), +q.close.toFixed(2)]);
+  const res = await yget(s.yahoo, "range=1y&interval=1d");
+  const ts = res.timestamp || [], cl = (res.indicators && res.indicators.quote && res.indicators.quote[0].close) || [];
+  const points = ts.map((t, k) => [new Date(t * 1000).toISOString().slice(0, 10), cl[k]]).filter(p => num(p[1]) !== null).map(p => [p[0], +p[1].toFixed(2)]);
   return { sym, points };
 }
 
