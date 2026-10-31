@@ -1,0 +1,10 @@
+{
+  "siteName": "NSE Stocks",
+  "disclosure": "Referral disclosure: we may earn a commission if you open a broker account through links on this site. This is not investment advice.",
+  "brokers": [
+    { "id": "zerodha",  "name": "Zerodha (Kite)", "tagline": "Flat-fee broker with a large retail base", "referralUrl": "" },
+    { "id": "groww",    "name": "Groww",          "tagline": "Simple app for first-time investors",      "referralUrl": "" },
+    { "id": "angelone", "name": "Angel One",      "tagline": "Full-service broker with research",        "referralUrl": "" },
+    { "id": "upstox",   "name": "Upstox",         "tagline": "Fast mobile trading, low brokerage",       "referralUrl": "" }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "name": "nse-stocks-referral",
+  "version": "1.0.0",
+  "description": "Live NSE Nifty 50 stocks list with broker referral links",
+  "type": "module",
+  "main": "server.js",
+  "scripts": { "start": "node server.js" },
+  "engines": { "node": ">=18" },
+  "dependencies": { "yahoo-finance2": "^2.13.3" }
+}
