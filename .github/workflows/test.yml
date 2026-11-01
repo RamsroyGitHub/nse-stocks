@@ -1,1 +1,24 @@
+name: Test NSE data
 
+on:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Try to download NSE daily file
+        run: |
+          for i in 0 1 2 3 4 5 6; do
+            D=$(date -u -d "$i days ago" +%d%m%Y)
+            URL="https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_${D}.csv"
+            CODE=$(curl -s -o nse.csv -w "%{http_code}" -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" -H "Referer: https://www.nseindia.com/" "$URL")
+            echo "$D -> HTTP $CODE"
+            if [ "$CODE" = "200" ] && [ "$(wc -l < nse.csv)" -gt 500 ]; then
+              echo "SUCCESS rows: $(wc -l < nse.csv)"
+              head -3 nse.csv
+              exit 0
+            fi
+          done
+          echo "FAILED"
+          exit 1
