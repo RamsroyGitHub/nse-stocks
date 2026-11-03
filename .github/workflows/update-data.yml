@@ -1,5 +1,8 @@
 name: Update data
 on:
+  push:
+    paths:
+      - ".github/workflows/update-data.yml"
   schedule:
     - cron: "30 13 * * 1-5"
   workflow_dispatch:
@@ -13,8 +16,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
+      - name: Check files
+        run: |
+          ls -la
+          ls -la scripts || echo "NO scripts folder found"
       - name: Build stock data
-        run: node .github/workflows/scripts/build-data.mjs
+        run: node scripts/build-data.mjs
       - name: Save data to the repository
         run: |
           git config user.name "data-bot"
